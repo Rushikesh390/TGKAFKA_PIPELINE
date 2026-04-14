@@ -62,7 +62,7 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 	writer := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:      []string{"localhost:9092"},
 		Topic:        topic,
-		BatchSize:    5000,
+		BatchSize:    20000,
 		BatchTimeout: 50 * time.Millisecond,
 	})
 	defer writer.Close()
@@ -70,7 +70,7 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 	ctx := context.Background()
 
 	//  batching
-	batch := make([]kafka.Message, 0, 5000)
+	batch := make([]kafka.Message, 0, 20000)
 
 	//  OLD: merge inside file loop
 	/*
@@ -90,9 +90,9 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 		recordsWritten++
 
 		// flush batch
-		if len(batch) >= 5000 {
+		if len(batch) >= 20000 {
 			batchesWritten++
-			// Log progress every 10 batches (50K records) instead of every batch
+			// Log progress every 10 batches (200K records) instead of every batch
 			if batchesWritten%10 == 0 {
 				log.Printf("Progress: topic %s has written %d records (%d batches)", topic, recordsWritten, batchesWritten)
 			}

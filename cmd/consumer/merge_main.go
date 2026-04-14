@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"kafka-pipeline/internal/merger"
 )
@@ -22,32 +23,50 @@ func main() {
 		log.Fatal("No chunk files found. Make sure consumer has completed.")
 	}
 
-	log.Printf("Found %d chunks, starting merge...\n", numChunks)
+	log.Printf("Found %d chunks, starting parallel merge...\n", numChunks)
+
+	// PHASE 1 OPTIMIZATION: Run 3 merges in parallel instead of sequentially
+	var wg sync.WaitGroup
 
 	// ID sort - compare numeric IDs (field 0)
-	merger.MergeFiles("output/id_chunk_%d.csv", numChunks, "id-sorted", func(a, b string) bool {
-		idA := extractField(a, 0)
-		idB := extractField(b, 0)
-		numA, _ := strconv.ParseInt(idA, 10, 64)
-		numB, _ := strconv.ParseInt(idB, 10, 64)
-		return numA < numB
-	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		merger.MergeFiles("output/id_chunk_%d.csv", numChunks, "id-sorted", func(a, b string) bool {
+			idA := extractField(a, 0)
+			idB := extractField(b, 0)
+			numA, _ := strconv.ParseInt(idA, 10, 64)
+			numB, _ := strconv.ParseInt(idB, 10, 64)
+			return numA < numB
+		})
+	}()
 
 	// Name sort - compare names (field 1)
-	merger.MergeFiles("output/name_chunk_%d.csv", numChunks, "name-sorted", func(a, b string) bool {
-		nameA := extractField(a, 1)
-		nameB := extractField(b, 1)
-		return nameA < nameB
-	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		merger.MergeFiles("output/name_chunk_%d.csv", numChunks, "name-sorted", func(a, b string) bool {
+			nameA := extractField(a, 1)
+			nameB := extractField(b, 1)
+			return nameA < nameB
+		})
+	}()
 
 	// Continent sort - compare continents (field 3)
-	merger.MergeFiles("output/continent_chunk_%d.csv", numChunks, "continent-sorted", func(a, b string) bool {
-		contA := extractField(a, 3)
-		contB := extractField(b, 3)
-		return contA < contB
-	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		merger.MergeFiles("output/continent_chunk_%d.csv", numChunks, "continent-sorted", func(a, b string) bool {
+			contA := extractField(a, 3)
+			contB := extractField(b, 3)
+			return contA < contB
+		})
+	}()
 
-	log.Println("All merges completed successfully!")
+	// Wait for all 3 merges to complete
+	wg.Wait()
+
+	log.Println("All merges completed successfully in parallel!")
 }
 
 // extractField extracts the field at index from a CSV line (assumes unquoted)
