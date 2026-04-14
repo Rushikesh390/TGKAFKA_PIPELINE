@@ -5,16 +5,41 @@ import (
 	kafkaproducer "kafka-pipeline/internal/kafka"
 	"kafka-pipeline/pkg/utils"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	kafka "github.com/segmentio/kafka-go"
 )
 
-const (
-	totalRecords = 50_000_000
-	numWorkers   = 4
-	batchSize    = 10000 // OPTIMIZED: was 1000, increased 10x for better throughput
+// Load from environment with defaults
+func getEnv(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	intVal, err := strconv.Atoi(val)
+	if err != nil {
+		log.Printf("Warning: Invalid %s value '%s', using default %d\n", key, val, defaultVal)
+		return defaultVal
+	}
+	return intVal
+}
+
+func getEnvString(key, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
+
+var (
+	totalRecords = getEnv("TOTAL_RECORDS", 50_000_000)
+	numWorkers   = getEnv("NUM_WORKERS", 4)
+	batchSize    = getEnv("BATCH_SIZE", 10000)
+	kafkaBroker  = getEnvString("KAFKA_BROKER", "localhost:9092")
 )
 
 func main() {

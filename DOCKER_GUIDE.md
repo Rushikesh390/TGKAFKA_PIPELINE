@@ -365,38 +365,97 @@ See [README.md](https://github.com/YOUR_USERNAME/repo) for details.
 
 ## Environment Variables
 
-### Available Env Vars
+All components support configuration via environment variables. If not set, sensible defaults are used.
 
+### Pipeline Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOTAL_RECORDS` | 50000000 | Total records to generate and process |
+| `NUM_WORKERS` | 4 | Number of producer worker threads |
+| `BATCH_SIZE` | 10000 | Batch size for producer |
+
+### Kafka Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KAFKA_BROKER` | localhost:9092 | Kafka broker address (use `kafka:9092` in docker-compose) |
+| `KAFKA_BATCH_SIZE` | 5000 | Records per Kafka write batch |
+| `KAFKA_BATCH_TIMEOUT` | 50 | Kafka batch timeout in milliseconds |
+
+### Consumer Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONSUMER_NUM_WORKERS` | 4 | Number of consumer sort workers |
+| `CONSUMER_BATCH_SIZE` | 1000000 | Consumer batch size (records per sort iteration) |
+| `CONSUMER_MIN_BYTES` | 100000 | Minimum bytes to read from Kafka |
+| `CONSUMER_MAX_BYTES` | 50000000 | Maximum bytes to read from Kafka |
+
+### Merger Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MERGER_BATCH_SIZE` | 20000 | Records per Kafka write batch during merge (Phase 2 optimization) |
+
+### Setting Environment Variables
+
+**In shell:**
 ```bash
-# Total records to generate (default: 50000000)
 export TOTAL_RECORDS=50000000
-
-# Kafka broker address (default: localhost:9092)
-export KAFKA_BROKER=localhost:9092
-
-# Number of worker threads (default: 4)
-export NUM_WORKERS=4
-
-# Consumer batch size (default: 1000000)
-export CONSUMER_BATCH_SIZE=1000000
-
-# Enable debug logging (default: false)
-export DEBUG=false
+export KAFKA_BROKER=kafka:9092
+export MERGER_BATCH_SIZE=20000
+./producer
 ```
 
-### Docker Compose with Env Vars
-
+**In docker-compose.yml:**
 ```yaml
 services:
-  kafka-pipeline:
-    image: kafka-pipeline:latest
+  pipeline:
     environment:
       TOTAL_RECORDS: 50000000
       KAFKA_BROKER: kafka:9092
-      DEBUG: "true"
+      MERGER_BATCH_SIZE: 20000
+```
+
+**In docker run:**
+```bash
+docker run \
+  -e TOTAL_RECORDS=50000000 \
+  -e KAFKA_BROKER=kafka:9092 \
+  -e MERGER_BATCH_SIZE=20000 \
+  kafka-pipeline:latest
+```
+
+### Tuning Parameters
+
+**For 100M records (double the default):**
+```bash
+export TOTAL_RECORDS=100000000
+export CONSUMER_BATCH_SIZE=2000000
+export MERGER_BATCH_SIZE=40000
+```
+
+**For limited resources (1GB RAM, 2 cores):**
+```bash
+export TOTAL_RECORDS=10000000
+export NUM_WORKERS=2
+export CONSUMER_BATCH_SIZE=500000
+export MERGER_BATCH_SIZE=10000
+```
+
+**For high performance (8GB RAM, 8 cores):**
+```bash
+export TOTAL_RECORDS=100000000
+export NUM_WORKERS=8
+export CONSUMER_NUM_WORKERS=8
+export CONSUMER_BATCH_SIZE=2000000
+export MERGER_BATCH_SIZE=50000
+export KAFKA_BATCH_SIZE=10000
 ```
 
 ---
+
 
 ## Performance Tuning in Docker
 

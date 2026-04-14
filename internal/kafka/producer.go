@@ -1,24 +1,49 @@
 package kafka
 
-import ("github.com/segmentio/kafka-go"
-"context"
-"time")
+import (
+	"context"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/segmentio/kafka-go"
+)
+
+func getEnvInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	intVal, _ := strconv.Atoi(val)
+	return intVal
+}
+
+func getEnvString(key, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
 
 func NewWriter(topic string) *kafka.Writer {
+	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
+	batchSize := getEnvInt("KAFKA_BATCH_SIZE", 5000)
+	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 50)
+
 	return &kafka.Writer{
-		Addr: kafka.TCP("localhost:9092"),
-		Topic: topic,
-		Balancer: &kafka.LeastBytes{},
-		BatchSize: 5000,           // OPTIMIZED: was 1000, increased 5x
-		BatchTimeout: 50 * time.Millisecond,  // OPTIMIZED: was 10ms
+		Addr:         kafka.TCP(broker),
+		Topic:        topic,
+		Balancer:     &kafka.LeastBytes{},
+		BatchSize:    batchSize,
+		BatchTimeout: time.Duration(batchTimeout) * time.Millisecond,
 		RequiredAcks: kafka.RequireOne,
-		Compression: kafka.Snappy,  // OPTIMIZED: add compression
+		Compression:  kafka.Snappy,
 	}
 }
 
-
 func WriteBatch(writer *kafka.Writer, messages []kafka.Message) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)  // OPTIMIZED: was 10s
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	return writer.WriteMessages(ctx, messages...)

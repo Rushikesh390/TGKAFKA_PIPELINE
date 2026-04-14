@@ -1,8 +1,10 @@
 package generator
 
-import ("math/rand"
+import (
+	"kafka-pipeline/pkg/models"
+	"math/rand"
 	"time"
-	"kafka-pipeline/pkg/models")
+)
 
 var continents = []string{"Asia", "Africa", "North America", "South America", "Europe", "Australia"}
 
@@ -32,9 +34,9 @@ func randomAddress(length int) string {
 
 func GenerateRecord(id int32) models.Record {
 	return models.Record{
-		ID: int32(rand.Int31()),
-		Name: randomString(10 + rand.Intn(6)),
-		Address: randomAddress(15 + rand.Intn(6)),
+		ID:        id,
+		Name:      randomString(10 + rand.Intn(6)),
+		Address:   randomAddress(15 + rand.Intn(6)),
 		Continent: continents[rand.Intn(len(continents))],
 	}
 }

@@ -5,14 +5,17 @@ import (
 )
 
 func NewReader(topic string) *kafka.Reader {
+	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
+	minBytes := getEnvInt("CONSUMER_MIN_BYTES", 100_000)
+	maxBytes := getEnvInt("CONSUMER_MAX_BYTES", 50_000_000)
+
 	return kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        []string{"localhost:9092"},
+		Brokers:        []string{broker},
 		Topic:          topic,
 		GroupID:        "group-1",
-		MinBytes:       100e3, // 100KB (was 10KB)
-		MaxBytes:       50e6,  // 50MB (was 10MB) - read bigger chunks
-		CommitInterval: 1000,  // batch commit
-		StartOffset:    -2,    // from beginning
+		MinBytes:       minBytes,
+		MaxBytes:       maxBytes,
+		CommitInterval: 1000,
+		StartOffset:    -2,
 	})
-
 }

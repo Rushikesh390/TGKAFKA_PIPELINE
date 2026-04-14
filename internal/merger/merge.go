@@ -5,12 +5,32 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"kafka-pipeline/pkg/utils"
 
 	kafka "github.com/segmentio/kafka-go"
 )
+
+// Helper functions to get environment variables
+func getEnvInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	intVal, _ := strconv.Atoi(val)
+	return intVal
+}
+
+func getEnvString(key, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
 
 func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b string) bool) {
 
@@ -58,12 +78,16 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 		defer writer.Close()
 	*/
 
-	//  NEW: single writer
+	//  NEW: single writer with environment-based configuration
+	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
+	batchSize := getEnvInt("MERGER_BATCH_SIZE", 20000)
+	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 50)
+
 	writer := kafka.NewWriter(kafka.WriterConfig{
-		Brokers:      []string{"localhost:9092"},
+		Brokers:      []string{broker},
 		Topic:        topic,
-		BatchSize:    20000,
-		BatchTimeout: 50 * time.Millisecond,
+		BatchSize:    batchSize,
+		BatchTimeout: time.Duration(batchTimeout) * time.Millisecond,
 	})
 	defer writer.Close()
 
@@ -109,9 +133,9 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 			rec := utils.FastFromCSV(line) // OPTIMIZED: use FastFromCSV
 			// OPTIMIZATION: Cache CSV to avoid repeated formatting
 			heap.Push(h, Item{
-				Record:   rec,
-				CSVLine:  line,
-				FileID:   item.FileID,
+				Record:  rec,
+				CSVLine: line,
+				FileID:  item.FileID,
 			})
 		}
 	}
