@@ -1,78 +1,84 @@
 #!/bin/bash
 
 # Docker entrypoint script for Kafka Pipeline
-# This script runs inside the container and orchestrates the pipeline
-# Usage: docker run docrushi/kafka-pipeline:v1
-# Or specific component: docker run docrushi/kafka-pipeline:v1 /app/producer
+# This script runs inside the container and orchestrates the pipeline.
 
-set -e
+set -euo pipefail
 
-# Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print colored output
 print_header() {
-    echo -e "${BLUE}=== $1 ===${NC}"
+  echo -e "${BLUE}=== $1 ===${NC}"
 }
 
 print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+  echo -e "${GREEN}[ok] $1${NC}"
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
+  echo -e "${YELLOW}[warn] $1${NC}"
 }
 
-# Check if running specific component
-if [ $# -gt 0 ] && [ "$1" = "/app/producer" ] || [ "$1" = "/app/consumer" ] || [ "$1" = "/app/merger" ]; then
-    print_header "Running: $1"
-    exec "$@"
+if [ $# -gt 0 ] && { [ "$1" = "/app/producer" ] || [ "$1" = "/app/consumer" ] || [ "$1" = "/app/merger" ]; }; then
+  print_header "Running: $1"
+  exec "$@"
 fi
 
-# If no arguments, run full pipeline
 print_header "Kafka Streaming Pipeline - Full Run"
-
-# Check Kafka connectivity
 print_header "Checking Kafka connectivity"
-KAFKA_BROKER="${KAFKA_BROKER:-kafka:9092}"
+KAFKA_BROKER="${KAFKA_BROKER:-kafka:29092}"
 echo "Using Kafka broker: $KAFKA_BROKER"
 
-# Give Kafka time to start (if running in docker-compose)
+KAFKA_HOST="${KAFKA_BROKER%:*}"
+KAFKA_PORT="${KAFKA_BROKER##*:}"
+
+wait_for_kafka() {
+  local attempts=0
+  while [ $attempts -lt 60 ]; do
+    if nc -z "$KAFKA_HOST" "$KAFKA_PORT"; then
+      return 0
+    fi
+
+    attempts=$((attempts + 1))
+    echo "Kafka not ready yet, waiting..."
+    sleep 2
+  done
+
+  return 1
+}
+
+if ! wait_for_kafka; then
+  print_warning "Kafka did not become reachable on $KAFKA_BROKER"
+  exit 1
+fi
+
+# Give the broker a brief additional window to finish startup after the port opens.
 sleep 5
 
-# Run pipeline components sequentially
-print_header "Starting Producer (generates 50M records)"
-if /app/producer; then
-    print_success "Producer completed"
-else
-    echo "Error: Producer failed"
-    exit 1
-fi
+print_header "Ensuring topics exist"
+/app/topics-init
 
-print_header "Starting Consumer (sorts records)"
-if /app/consumer; then
-    print_success "Consumer completed"
-else
-    echo "Error: Consumer failed"
-    exit 1
-fi
+mkdir -p /app/output /app/logs
 
-print_header "Starting Merger (k-way merge)"
-if /app/merger; then
-    print_success "Merger completed"
+print_header "Resetting mounted output and logs"
+# Compose bind mounts persist between runs, so remove only the generated
+# artifacts we own before starting a fresh pipeline execution.
+find /app/output -maxdepth 1 -type f -name '*.csv' -delete
+find /app/logs -maxdepth 1 -type f \( -name '*.log' -o -name 'overall_report.txt' \) -delete
+
+if /app/scripts/run_all.sh --no-kafka-start; then
+  print_success "Pipeline completed"
 else
-    echo "Error: Merger failed"
-    exit 1
+  print_warning "Pipeline failed"
+  exit 1
 fi
 
 print_header "Pipeline Execution Complete!"
 print_success "All stages finished successfully"
 echo "Results are in Kafka topics:"
-echo "  - id-sorted: 50M records sorted by ID"
-echo "  - name-sorted: 50M records sorted by Name"
-echo "  - continent-sorted: 50M records sorted by Continent"
-
-exit 0
+echo "  - id: 50M records sorted by ID"
+echo "  - name: 50M records sorted by Name"
+echo "  - continent: 50M records sorted by Continent"

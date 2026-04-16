@@ -1,53 +1,7 @@
-# Git
-.git
-.gitignore
-.github
-
-# Build artifacts
-bin/
-dist/
-*.exe
-*.exe~
-
-# Test files
-cmd/test/
-*_test.go
-
-# IDE/Editor
-.vscode
-.idea
-*.swp
-*.swo
-Thumbs.db
-.DS_Store
-
-# Logs and outputs
-logs/
-*.log
 output/
-*.csv
-
-# OS and local files
-.env
-.env.local
-.env.*.local
-
-# Docker-related
-docker-compose.yml
-.dockerignore
-
-# Documentation (keep README for reference, remove others)
-NEXT_STEPS.md
-EXECUTION_PROOF.md
-SENIOR_DEV_SUMMARY.md
-DOCKER_GUIDE.md
-
-# Development
-Makefile
-pkg/docs/
-internal/samples/
-
-# Misc
-go.sum.bak
-*.tmp
-*~
+logs/
+.git/
+.gocache/
+.gomodcache/
+bin/
+*.log

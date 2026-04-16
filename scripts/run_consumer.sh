@@ -14,7 +14,11 @@ echo "Reading from Kafka 'source' topic..."
 echo "Sorting by: ID (numeric), Name (alphabetic), Continent (alphabetic)"
 echo ""
 
-go run cmd/consumer/main.go
+if [ -x "./consumer" ]; then
+  ./consumer
+else
+  go run ./cmd/consumer
+fi
 
 echo ""
 echo "✓ Consumer completed successfully"

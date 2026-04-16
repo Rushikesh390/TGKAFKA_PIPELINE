@@ -1,434 +1,182 @@
-# Architecture & Workflow Documentation
+# Architecture
 
-## High-Level Overview
+## Pipeline Overview
 
-The Kafka Pipeline is a distributed data processing system that:
-1. **Generates** 50 million CSV records
-2. **Sorts** them by three dimensions (ID, Name, Continent) in parallel
-3. **Merges** sorted chunks using k-way heap algorithm
-4. **Outputs** final sorted data to Kafka topics
+The system is a three-stage external sorting pipeline built around Kafka.
 
-![Data Flow](ascii flow below)
-
-```
-┌─────────────┐
-│  Producer  │  Stage 1: Generate 50M records
-└──────┬──────┘  373K records/sec
-       │
-       ▼
-   Kafka Topic: "source"
-       │
-   ┌───┴────────────────────────┐
-   │                            │
-   ▼ (Kafka Consumer reads)     ▼
-┌──────────────────────────────────────┐
-│         Consumer              │
-│  - Batches: 1M records      │
-│  - 4 parallel workers       │
-│  - 3 sorts per batch        │
-└──────────┬───────────────────┘
-           │
-    ┌──────┴──────────────┐
-    │                     │
-    ▼                     ▼
- id_chunk_*.csv      name_chunk_*.csv
- (50 chunks)         (50 chunks)
-    │                     │
-    └──────────┬──────────┘
-               │
-               ▼
-        ┌─────────────────┐
-        │     Merger      │  Stage 3: K-way merge
-        │  3 parallel     │  1 merge per dimension
-        │  k-way merges   │
-        └────────┬────────┘
-                 │
-        ┌────────┼────────┐
-        ▼        ▼        ▼
-    Kafka Topic "id-sorted"
-    Kafka Topic "name-sorted"  
-    Kafka Topic "continent-sorted"
-    (50M records each)
+```text
+Producer
+  -> topic: source
+Consumer
+  -> output/id_chunk_*.csv
+  -> output/name_chunk_*.csv
+  -> output/continent_chunk_*.csv
+Merger
+  -> topic: id
+  -> topic: name
+  -> topic: continent
 ```
 
----
+## Stage 1: Producer
 
-## Component Architecture
+Entrypoint: `cmd/producer`
 
-### 1. Producer (`cmd/producer/main.go`)
+Responsibilities:
 
-**Purpose:** Generate 50 million unique records and send to Kafka
+- split the total record count across producer workers
+- generate records that match the assignment schema
+- batch Kafka writes to the `source` topic
 
-**Algorithm:**
-```
-Split 50M records across 4 workers
-Each worker calculates global ID offset:
-  offset = (workerID * recordsPerWorker) + min(workerID, remainder)
-  
-For each record i in range:
-  id = offset + i  (guarantees unique sequential IDs)
-  Generate random: name, address, continent
-  Encode as CSV
-  Add to batch (10K batch size)
-  Send to Kafka when batch full
-```
+Implementation notes:
 
-**Key Optimizations:**
-- Worker pool (4 parallel workers)
-- Batch writing (10K records per write)
-- Lock-free distribution (each worker owns ID range)
+- each worker uses its own `math/rand.Rand` instance to avoid global RNG lock contention
+- IDs are assigned from disjoint ranges so every generated record is unique
+- producer write errors cancel the run instead of being logged and ignored
 
-**Performance:**
-- ~373K records/sec
-- Expected time: 2-3 minutes
+## Stage 2: Consumer
 
-**Output:** Kafka topic `source` with 50M raw records
+Entrypoint: `cmd/consumer`
 
----
+Responsibilities:
 
-### 2. Consumer (`cmd/consumer/main.go`)
+- read all partitions of `source`
+- accumulate a bounded batch in memory
+- sort that batch three ways
+- write sorted chunk files to disk
 
-**Purpose:** Read from Kafka, sort by 3 dimensions, write chunks
+### Why external sorting
 
-**Algorithm:**
-```
-Batch Size = 1M records
-Total Batches = 50
+Sorting all 50 million records in memory is not realistic under the assignment limits, so the dataset is processed in bounded batches and merged later.
+
+### Batch flow
 
 For each batch:
-  [Parallel] Read 1M from Kafka
-  [Parallel] 3-way sort (ID, Name, Continent):
-    - SortByIDIndexed: returns index array
-    - SortByNameIndexed: returns index array  
-    - SortByContinentIndexed: returns index array
-  
-  Index-based sorting = NO DATA COPY:
-    - Original data stays in memory once
-    - Sort returns indices into original array
-    - Write uses indices to reorder output
-    
-  [Parallel] Write 3 chunk files (id, name, continent)
-    - Each uses sorted indices
-    - No copying intermediate sorted arrays
-```
 
-**Memory Optimization (Critical for 2GB limit):**
+1. read up to `CONSUMER_BATCH_SIZE` records from Kafka
+2. sort indices by `id`
+3. sort indices by `name`
+4. sort indices by `continent`
+5. write three chunk files using the sorted indices
 
-❌ Bad: `sorted := make([]Record, len(records)); copy(sorted, records); sort(sorted)`
-- Creates duplicate copy (2x memory)
-- Total: 50M * 2 copies = massive memory
+### Indexed sorting
 
-✅ Good: `indices := sortIndices(records); write using indices`
-- Original stays: 50M records = 512MB
-- Indices: 50M ints = 200MB
-- Total per batch: 712MB (within 2GB)
+The consumer does not create three copied `[]Record` slices for the three sort orders.
+Instead, it sorts `[]int` index arrays against the original record slice:
 
-**Inside Consumer Worker Loop:**
-- Channel-based producer-consumer pattern
-- 4 workers process batches in parallel
-- Each worker sorts and writes independently
-
-**Output:** 50 chunk files per dimension
-- `output/id_chunk_0.csv` through `output/id_chunk_49.csv`
-- `output/name_chunk_0.csv` through `output/name_chunk_49.csv`
-- `output/continent_chunk_0.csv` through `output/continent_chunk_49.csv`
-
-**Performance:**
-- 100-150K records/sec
-- Expected time: 10-15 minutes
-
----
-
-### 3. Merger (`cmd/consumer/merge_main.go`)
-
-**Purpose:** K-way merge 50 sorted chunks into final sorted output on Kafka
-
-**K-Way Merge Algorithm:**
-
-```
-Min-Heap based k-way merge:
-
-1. Open all 50 files
-2. Create min-heap with first record from each file
-3. Loop:
-   - Pop minimum from heap
-   - Write to Kafka
-   - Read next from same file
-   - Push to heap
-4. Repeat until heap empty
-```
-
-**Why Min-Heap?**
-- Efficient: O(n log k) where n=50M records, k=50 files
-- Only 50 elements in heap at once
-- Compare cost optimized (cached CSV strings)
-
-**Parallel 3-Way Merge (Version 2 Optimization):**
-
-Instead of:
-```
-Merge id_chunks -> Complete (25 min)
-Merge name_chunks -> Complete (25 min) 
-Merge continent_chunks -> Complete (25 min)
-Total: 75 minutes
-```
-
-Now:
-```
-[Goroutine 1] Merge id_chunks (25 min)
-[Goroutine 2] Merge name_chunks (25 min)
-[Goroutine 3] Merge continent_chunks (25 min)
-All run in parallel, wait for max: 25 minutes ✓
-```
-
-**Performance Optimization: CSV Caching**
 ```go
-// ❌ Bad: Every heap comparison does 2 TOCSV calls
-type Item struct {
-    Record models.Record
-}
-func (h *MinHeap) Less(i, j int) bool {
-    return TOCSV(h.Items[i].Record) < TOCSV(h.Items[j].Record)  // Twice!
-}
-
-// ✅ Good: Cache CSV string on insert
-type Item struct {
-    Record models.Record
-    CSVLine string  // Pre-computed
-}
-func (h *MinHeap) Less(i, j int) bool {
-    return h.Items[i].CSVLine < h.Items[j].CSVLine  // No recomputation
-}
+sort.Slice(indices, func(i, j int) bool {
+    return records[indices[i]].ID < records[indices[j]].ID
+})
 ```
 
-Result: **65% speedup** on merger stage
+This keeps the main memory cost to:
 
-**Output:** Kafka topics
-- `id-sorted`: 50M records sorted numerically (1, 2, 3, ..., 50M)
-- `name-sorted`: 50M records sorted alphabetically
-- `continent-sorted`: 50M records sorted alphabetically
+- the original batch
+- three index arrays
+- small writer buffers
 
-**Performance:**
-- ~100K records/sec per merge
-- Parallel execution: 3 merges take ~25 min (same as single merge!)
-- Expected time: 20-25 minutes
+### Memory control
 
----
+The current defaults are intentionally conservative:
 
-## Key Algorithms & Data Structures
+- `CONSUMER_BATCH_SIZE=200000`
+- `CONSUMER_NUM_WORKERS=1`
+- channel buffer size `1`
 
-### 1. Index-Based Sorting
+That means the consumer keeps at most one queued batch plus one active batch in play, rather than several copied million-record batches.
 
-**Problem:** Sorting 50M records requires memory for copy + original = 2GB+ RAM
+## Stage 3: Merger
 
-**Solution:** Return indices instead of copy
-```go
-func SortByIDIndexed(records []Record) []int {
-    indices := make([]int, len(records))
-    for i := range indices {
-        indices[i] = i  // Start with original order
-    }
-    
-    // Sort indices based on record values
-    sort.Slice(indices, func(i, j int) bool {
-        return records[indices[i]].ID < records[indices[j]].ID
-    })
-    
-    return indices  // 200MB indices, not 512MB copy
-}
-```
+Entrypoint: `cmd/merger`
 
-**WriteChunkByIndices:** Uses indices to output in sorted order without copying
+Responsibilities:
 
-### 2. K-Way Merge with Min-Heap
+- open all chunk files for a sort dimension
+- perform k-way merge using a min-heap
+- stream merged records to Kafka
 
-**Problem:** Merge 50 sorted files efficiently
+### Heap strategy
 
-**Solution:** Min-heap maintains top element from each file
-```go
-type Item struct {
-    Record  models.Record
-    CSVLine string  // Cache to avoid recomputation
-    FileID  int     // Which file this came from
-}
+Each heap item stores:
 
-type MinHeap struct {
-    Items    []Item
-    LessFunc func(a, b string) bool  // Custom comparator
-}
+- the parsed `Record`
+- the original CSV line
+- the source file id
 
-// Binary heap operations: O(log k) where k=50 files
-heap.Push()  // Add new record
-heap.Pop()   // Get minimum
-```
+The comparator now uses parsed record fields directly:
 
-### 3. Batch Processing
+- `Record.ID` for `id`
+- `Record.Name` for `name`
+- `Record.Continent` for `continent`
 
-**Problem:** 50M records at once = memory explosion
+The merger writes the cached CSV line back to Kafka, which avoids:
 
-**Solution:** Process in 1M record batches
-```
-Total records: 50M
-Batch size: 1M
-Total batches: 50
+- reparsing during every comparison
+- reformatting every record during Kafka writes
 
-Each batch:
-  - Memory usage: 512MB + index overhead = ~700MB
-  - 3 parallel sorts: ~5 seconds
-  - 3 parallel writes: ~5 seconds
-  - Total per batch: ~10 seconds
-  
-50 batches * 10 sec = 500 seconds = 8.3 minutes
-(observed: 10-15 min due to I/O)
-```
+## Kafka and Topic Model
 
----
+Topics:
 
-## Data Flow in Detail
+- `source`
+- `id`
+- `name`
+- `continent`
 
-### Stage 1: Production Flow
+Compose exposes Kafka in two ways:
 
-```
-Producer Worker 0        Producer Worker 1        Producer Worker 2        Producer Worker 3
-ID: 0-12.5M             ID: 12.5M-25M            ID: 25M-37.5M            ID: 37.5M-50M
-(gen + send kafka)      (gen + send kafka)       (gen + send kafka)       (gen + send kafka)
-         │                      │                       │                      │
-         └──────────────────────┴───────────────────────┴──────────────────────┘
-                                 │
-                        Kafka Topic: "source"
-                         (50M Records, unordered)
-```
+- `localhost:9092` for host tools
+- `kafka:29092` for sibling containers
 
-### Stage 2: Sorting Flow
+This avoids the earlier mismatch where the broker advertised `localhost` even for container-to-container traffic.
 
-```
-Kafka Consumer                Channel              Worker Pool (4 workers)
-┌──────────────────┐         ┌────┐
-│ Read 1M batch 1  │────────▶│    │
-└──────────────────┘         │    │  Worker 0 ─▶ Sort + Write
-┌──────────────────┐         │ Ch │  Worker 1 ─▶ Sort + Write
-│ Read 1M batch 2  │────────▶│ a  │  Worker 2 ─▶ Sort + Write
-└──────────────────┘         │ n  │  Worker 3 ─▶ Sort + Write
-         ...                 │ n  │
-┌──────────────────┐         │ e  │
-│ Read 1M batch 50 │────────▶│ l  │
-└──────────────────┘         └────┘
-                                │
-                         (50 chunk files
-                         per dimension)
-```
+## Rerun Strategy
 
-### Stage 3: Merge Flow
+Clean reruns are important for this assignment because old records in Kafka would corrupt count verification.
 
-```
-File Pool (50 chunks)           Min-Heap           Kafka Producer
-┌─ id_0.csv                    ┌──────┐
-├─ id_1.csv    ┐               │      │  Pop min
-├─ id_2.csv    ├──────────────▶│Heap()│  Write
-│   ...        │               │      │  Read next
-└─ id_49.csv   │               └──────┘
-               │                   │
-┌─ name_0.csv  ├───────────────────┼──▶ Kafka: "id-sorted"
-│   ...        │                   ├──▶ Kafka: "name-sorted"
-└─ name_49.csv │                   └──▶ Kafka: "continent-sorted"
-               │
-┌─ continent_0 │
-│   ...        │
-└─ continent_49│
-```
+Current behavior:
 
----
+- `scripts/start.sh` resets the Compose stack with `down -v`
+- topics are recreated explicitly
+- the consumer uses a run-unique group id by default
 
-## Resource Management
+That combination ensures a fresh read path when you use the supported script flow.
 
-### Memory Model
+## Bottlenecks
 
-**Total 2GB allocation:**
-```
-Zookeeper:             256MB
-Kafka:                 512MB  
-Pipeline Container:    512MB
-OS + Headroom:         720MB
-─────────────────────────────
-Total:                1.998GB ≈ 2GB
-```
+The main bottlenecks are:
 
-**Within Pipeline Container (512MB):**
-```
-Per 1M batch processing:
-  - Original records: ~350MB (1M * 350B/record)
-  - Indices (3x):     ~150MB (3 * 1M * 8B/int)
-  - Writer buffers:   ~12MB
-─────────────────────────────
-  Total:              ~512MB
-```
+1. Kafka I/O  
+   Producer and merger throughput are constrained by broker writes and batching behavior.
 
-**Why not OOM?**
-1. Streaming from Kafka (not all at once)
-2. 1M batch size carefully chosen
-3. Index-based sorting (no copies)
-4. Streaming write to disk (no accumulation)
+2. Sort CPU  
+   The consumer does three comparison-based sorts per batch.
 
-### CPU Model
+3. Disk I/O  
+   The consumer writes many chunk files and the merger rereads them.
 
-**All 4 cores utilized:**
-```
-Producer:  1 core (writing to Kafka)
-Consumer:  3 cores (3 parallel sorts on 1M batch)
-Merger:    4 cores (3 parallel k-way merges)
-```
+4. Merge comparisons  
+   K-way merge is efficient at `O(n log k)`, but still executes a huge number of comparisons across 50 million records.
 
----
+## Optimizations Applied
 
-## Performance Metrics
+- indexed sorting to avoid three full data copies
+- bounded in-flight consumer batches
+- per-worker RNG instances
+- cached CSV lines in the merger
+- direct record-field comparisons in heap ordering
+- shared config and exact topic naming across code and scripts
+- runtime reporting in `scripts/unified_run.sh`
 
-### Achieved Performance
+## If We Had More Data or More Machines
 
-| Stage | Throughput | Time | Bottleneck |
-|-------|-----------|------|-----------|
-| Producer | 373K rec/sec | 2-3 min | CPU (record generation) |
-| Consumer | 100-150K rec/sec | 10-15 min | Disk I/O |
-| Merger | 100K rec/sec | 25 min (parallel) | Network (Kafka write) |
-| **Total** | — | **35-40 min** | K-way merge |
+For larger datasets:
 
-### Optimizations Applied
+- increase Kafka partitions and parallelize producer/consumer groups accordingly
+- shard chunk output per partition or worker
+- run merge stages on separate workers per dimension
+- move intermediate chunk storage to fast local SSD or distributed storage
+- replace single-node Kafka/ZooKeeper with a proper multi-broker cluster
+- coordinate final merge fan-in as a tree merge instead of a single-node merge
 
-1. **Index-based sorting** (eliminates 3 data copies) → 75% memory saved
-2. **Parallel sorts within batch** (3 goroutines) → 2x sort speed
-3. **K-way heap merge** (O(n log k)) → efficient merge
-4. **CSV caching** (cache string in heap) → 65% merger speedup
-5. **Parallel 3-way merge** (3 goroutines) → 3x merger latency
-6. **Batch processing** (1M at a time) → memory control
-7. **Worker pools** (producer, consumer) → parallelism
-
----
-
-## Error Handling
-
-### Producer Failures
-- Handles partial batch errors
-- Logs worker errors individually
-- Continues with remaining batches
-
-### Consumer Failures
-- Timeout on Kafka read (10-second idle)
-- Graceful EOF detection
-- Chunk file validation
-
-### Merger Failures
-- FileReader error checking
-- Kafka write error handling
-- Cleanup on failure (file close)
-
----
-
-## Verification
-
-To verify correctness:
-1. **Count records:** Should have 50M in each output topic
-2. **Check ID sorting:** First record has lowest ID, last has highest
-3. **Check uniqueness:** No duplicate IDs
-4. **Check field types:** ID is numeric, name/continent are alphabetical
-
-See [VERIFICATION.md](VERIFICATION.md) for detailed verification steps.
-
+The current project is intentionally single-node and assignment-focused, but the overall pattern scales naturally to partitioned distributed processing.

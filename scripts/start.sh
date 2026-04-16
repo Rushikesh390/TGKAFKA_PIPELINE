@@ -1,40 +1,64 @@
 #!/bin/bash
 
+set -euo pipefail
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    docker-compose "$@"
+  fi
+}
+
+BOOTSTRAP_SERVER="${BOOTSTRAP_SERVER:-kafka:29092}"
+TOPIC_PARTITIONS="${TOPIC_PARTITIONS:-4}"
+
+echo "Resetting Kafka stack for a clean run..."
+compose down -v --remove-orphans >/dev/null 2>&1 || true
+
 echo "Starting Kafka..."
-docker-compose up -d
+compose up -d zookeeper kafka
 
 echo "Waiting for Kafka to start..."
-sleep 10
+for attempt in $(seq 1 30); do
+  if compose exec -T kafka kafka-topics --bootstrap-server "$BOOTSTRAP_SERVER" --list >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
 
-echo "Creating topics.."
+echo "Creating topics..."
 
-docker exec -it tgassignment-kafka-1 kafka-topics \
-    --create \
-    --topic source\
-    --bootstrap-server localhost:9092 \
-    --partitions 4 \
-    --replication-factor 1
+compose exec -T kafka kafka-topics \
+  --create \
+  --if-not-exists \
+  --topic source \
+  --bootstrap-server "$BOOTSTRAP_SERVER" \
+  --partitions "$TOPIC_PARTITIONS" \
+  --replication-factor 1
 
-docker exec -it tgassignment-kafka-1 kafka-topics \
-    --create \
-    --topic id-sorted\
-    --bootstrap-server localhost:9092 \
-    --partitions 4 \
-    --replication-factor 1
+compose exec -T kafka kafka-topics \
+  --create \
+  --if-not-exists \
+  --topic id \
+  --bootstrap-server "$BOOTSTRAP_SERVER" \
+  --partitions "$TOPIC_PARTITIONS" \
+  --replication-factor 1
 
-docker exec -it tgassignment-kafka-1 kafka-topics \
-    --create \
-    --topic name-sorted\
-    --bootstrap-server localhost:9092 \
-    --partitions 4 \
-    --replication-factor 1
+compose exec -T kafka kafka-topics \
+  --create \
+  --if-not-exists \
+  --topic name \
+  --bootstrap-server "$BOOTSTRAP_SERVER" \
+  --partitions "$TOPIC_PARTITIONS" \
+  --replication-factor 1
 
-docker exec -it tgassignment-kafka-1 kafka-topics \
-    --create \
-    --topic continent-sorted\
-    --bootstrap-server localhost:9092 \
-    --partitions 4 \
-    --replication-factor 1
-
+compose exec -T kafka kafka-topics \
+  --create \
+  --if-not-exists \
+  --topic continent \
+  --bootstrap-server "$BOOTSTRAP_SERVER" \
+  --partitions "$TOPIC_PARTITIONS" \
+  --replication-factor 1
 
 echo "Kafka setup completed"

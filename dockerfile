@@ -22,7 +22,8 @@ RUN go mod tidy
 # Build binaries with optimization flags (strip debug symbols to reduce size)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o producer ./cmd/producer/main.go
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o consumer ./cmd/consumer/main.go
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o merger ./cmd/consumer/merge_main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o merger ./cmd/merger/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o topics-init ./cmd/topicsinit/main.go
 
 # Stage 2: Runtime stage - Alpine only (7MB base vs 210MB golang image)
 FROM alpine:latest
@@ -31,13 +32,14 @@ WORKDIR /app
 
 # Install only runtime dependencies (bash for scripts)
 # Keep dependencies minimal for smaller image
-RUN apk add --no-cache bash ca-certificates
+RUN apk add --no-cache bash bc ca-certificates netcat-openbsd procps
 
 # Copy binaries from builder (only what we need)
-COPY --from=builder /app/producer /app/consumer /app/merger ./
+COPY --from=builder /app/producer /app/consumer /app/merger /app/topics-init ./
 
 # Copy scripts for automation
 COPY scripts/ ./scripts/
+COPY README.md ARCHITECTURE.md VERIFICATION.md DOCKER_GUIDE.md DOCKER_README.md ./
 
 # Create output directory with proper permissions
 RUN mkdir -p /app/output && chmod 777 /app/output

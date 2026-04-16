@@ -1,18 +1,19 @@
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
     ports:
       - "2181:2181"
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.5'
+    mem_limit: 256m
+    cpus: 0.50
+    networks:
+      - pipeline
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
     depends_on:
       - zookeeper
     ports:
@@ -20,14 +21,49 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: ${TOPIC_PARTITIONS:-4}
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 1
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '2'
-        reservations:
-          memory: 512M
-          cpus: '1'
+    mem_limit: 1g
+    cpus: 1.50
+    networks:
+      - pipeline
+
+  pipeline:
+    image: ${PIPELINE_IMAGE:-docrushi/kafka-pipeline:latest}
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:29092
+      OUTPUT_DIR: /app/output
+      TOTAL_RECORDS: ${TOTAL_RECORDS:-50000000}
+      TOPIC_PARTITIONS: ${TOPIC_PARTITIONS:-4}
+      PRODUCER_NUM_WORKERS: ${PRODUCER_NUM_WORKERS:-4}
+      PRODUCER_BATCH_SIZE: ${PRODUCER_BATCH_SIZE:-10000}
+      CONSUMER_NUM_WORKERS: ${CONSUMER_NUM_WORKERS:-1}
+      CONSUMER_BATCH_SIZE: ${CONSUMER_BATCH_SIZE:-200000}
+      CONSUMER_IDLE_TIMEOUT_SECS: ${CONSUMER_IDLE_TIMEOUT_SECS:-10}
+      CONSUMER_IDLE_MAX_ATTEMPTS: ${CONSUMER_IDLE_MAX_ATTEMPTS:-6}
+      MERGER_BATCH_SIZE: ${MERGER_BATCH_SIZE:-20000}
+      SOURCE_TOPIC: source
+      ID_TOPIC: id
+      NAME_TOPIC: name
+      CONTINENT_TOPIC: continent
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+    mem_limit: 768m
+    cpus: 2.00
+    restart: "no"
+    networks:
+      - pipeline
+
+networks:
+  pipeline:
+    driver: bridge

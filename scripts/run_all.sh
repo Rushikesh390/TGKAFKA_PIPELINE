@@ -4,7 +4,7 @@
 # This script coordinates all stages: Producer → Consumer → Merger
 # Usage: ./scripts/run_all.sh [--help] [--no-kafka-start]
 
-set -e  # Exit on any error
+set -euo pipefail
 
 # Parse arguments
 SKIP_KAFKA=false
@@ -25,7 +25,7 @@ for arg in "$@"; do
       echo ""
       echo "Output:"
       echo "  - CSV chunks in: ./output/"
-      echo "  - Merged data in: Kafka topics (id-sorted, name-sorted, continent-sorted)"
+      echo "  - Merged data in: Kafka topics (id, name, continent)"
       echo "  - Runtime report: ./logs/overall_report.txt"
       exit 0
       ;;
@@ -39,10 +39,6 @@ done
 if [ "$SKIP_KAFKA" = false ]; then
   echo "Starting Kafka and Zookeeper..."
   ./scripts/start.sh
-  
-  # Wait for Kafka to be ready
-  echo "Waiting for Kafka to be ready..."
-  sleep 15
 fi
 
 # Run the unified orchestrator

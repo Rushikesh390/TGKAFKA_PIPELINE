@@ -3,8 +3,8 @@ package sorter
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"kafka-pipeline/pkg/models"
+	"os"
 )
 
 func WriteChunkToFile(records []models.Record, filename string) error {
@@ -18,7 +18,9 @@ func WriteChunkToFile(records []models.Record, filename string) error {
 	for _, r := range records {
 		line := fmt.Sprintf("%d,%s,%s,%s\n",
 			r.ID, r.Name, r.Address, r.Continent)
-		writer.WriteString(line)
+		if _, err := writer.WriteString(line); err != nil {
+			return err
+		}
 	}
 	return writer.Flush()
 }
@@ -36,7 +38,9 @@ func WriteChunkByIndices(records []models.Record, indices []int, filename string
 		r := records[idx]
 		line := fmt.Sprintf("%d,%s,%s,%s\n",
 			r.ID, r.Name, r.Address, r.Continent)
-		writer.WriteString(line)
+		if _, err := writer.WriteString(line); err != nil {
+			return err
+		}
 	}
 	return writer.Flush()
 }

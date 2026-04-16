@@ -6,20 +6,19 @@ import (
 
 type Item struct {
 	Record  models.Record
-	CSVLine string // OPTIMIZATION: Cache CSV to avoid repeated formatting
+	CSVLine string
 	FileID  int
 }
 
 type MinHeap struct {
 	Items    []Item
-	LessFunc func(csvA, csvB string) bool // Now accepts CSV strings directly
+	LessFunc func(a, b Item) bool
 }
 
 func (h *MinHeap) Len() int { return len(h.Items) }
 
-// Use cached CSV strings for comparison - NO formatting at comparison time!
 func (h *MinHeap) Less(i, j int) bool {
-	return h.LessFunc(h.Items[i].CSVLine, h.Items[j].CSVLine)
+	return h.LessFunc(h.Items[i], h.Items[j])
 }
 
 func (h *MinHeap) Swap(i, j int) {

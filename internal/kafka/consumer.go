@@ -1,10 +1,12 @@
 package kafka
 
 import (
+	"time"
+
 	"github.com/segmentio/kafka-go"
 )
 
-func NewReader(topic string) *kafka.Reader {
+func NewReader(topic, groupID string) *kafka.Reader {
 	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
 	minBytes := getEnvInt("CONSUMER_MIN_BYTES", 100_000)
 	maxBytes := getEnvInt("CONSUMER_MAX_BYTES", 50_000_000)
@@ -12,10 +14,10 @@ func NewReader(topic string) *kafka.Reader {
 	return kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        []string{broker},
 		Topic:          topic,
-		GroupID:        "group-1",
+		GroupID:        groupID,
 		MinBytes:       minBytes,
 		MaxBytes:       maxBytes,
-		CommitInterval: 1000,
-		StartOffset:    -2,
+		CommitInterval: time.Second,
+		StartOffset:    kafka.FirstOffset,
 	})
 }

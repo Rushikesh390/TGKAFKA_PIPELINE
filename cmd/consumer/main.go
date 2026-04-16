@@ -2,21 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"kafka-pipeline/internal/config"
 	"kafka-pipeline/internal/kafka"
 	"kafka-pipeline/internal/sorter"
 	"kafka-pipeline/pkg/models"
 	"kafka-pipeline/pkg/utils"
 	"log"
+	"os"
 	"sync"
 	"time"
-)
-
-const (
-	// batchSize = 200000  //  OLD (small batch)
-	batchSize = 1_000_000 //  OPTIMIZED: 1M for better memory efficiency with 2GB RAM
-
-	numWorkers = 4 //  parallel workers
 )
 
 // BatchJob holds both the batch data and its chunk ID
@@ -26,83 +22,133 @@ type BatchJob struct {
 }
 
 func main() {
+	cfg := config.GetConfig()
+	if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
+		log.Fatalf("create output directory: %v", err)
+	}
 
 	startTime := time.Now()
 
-	reader := kafka.NewReader("source")
+	reader := kafka.NewReader(cfg.SourceTopic, cfg.ConsumerGroupID)
 	defer reader.Close()
 
-	//  NEW: channel for decoupling read & process
-	batchChan := make(chan BatchJob, numWorkers)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	batchChan := make(chan BatchJob, 1)
+	errCh := make(chan error, cfg.ConsumerNumWorkers)
 
 	var wg sync.WaitGroup
 
-	//  WORKER POOL
-	for i := 0; i < numWorkers; i++ {
+	for i := 0; i < cfg.ConsumerNumWorkers; i++ {
 		wg.Add(1)
-		go func(workerID int) {
+		go func() {
 			defer wg.Done()
 
-			for job := range batchChan {
-				processChunk(job.data, job.chunkID) // parallel processing with correct chunk ID
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job, ok := <-batchChan:
+					if !ok {
+						return
+					}
+					if err := processChunk(cfg, job.data, job.chunkID); err != nil {
+						select {
+						case errCh <- err:
+						default:
+						}
+						cancel()
+						return
+					}
+				}
 			}
-		}(i)
+		}()
 	}
 
-	var batch []models.Record
+	batch := make([]models.Record, 0, cfg.ConsumerBatchSize)
 	chunkID := 0
 	totalRecords := 0
 	chunkStartTime := time.Now()
-	expectedRecords := 50_000_000
-	idleTimeout := 10 * time.Second
+	idleTimeout := time.Duration(cfg.ConsumerIdleSecs) * time.Second
+	idleAttempts := 0
 
 	log.Println("Consumer started (optimized)...")
 
 	for {
-		// Create context with 10-second timeout to detect idle/EOF
-		readCtx, cancel := context.WithTimeout(context.Background(), idleTimeout)
-		msg, err := reader.ReadMessage(readCtx)
-		cancel()
-
-		if err != nil {
-			// Check if we've reached expected record count
-			if totalRecords >= expectedRecords {
-				log.Printf("Reached expected record count (%d). Finishing...\n", expectedRecords)
-				break
-			}
-			log.Println("Finished reading:", err)
-			break
+		select {
+		case err := <-errCh:
+			log.Fatal(err)
+		default:
 		}
 
-		record := utils.FastFromCSV(string(msg.Value)) // OPTIMIZED: use FastFromCSV instead
+		readCtx, readCancel := context.WithTimeout(ctx, idleTimeout)
+		msg, err := reader.ReadMessage(readCtx)
+		readCancel()
+
+		if err != nil {
+			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+				break
+			}
+
+			if errors.Is(err, context.DeadlineExceeded) {
+				idleAttempts++
+
+				if totalRecords == cfg.TotalRecords {
+					log.Printf("Reached expected record count (%d). Finishing...\n", cfg.TotalRecords)
+					break
+				}
+
+				if idleAttempts < cfg.ConsumerIdleMaxes {
+					log.Printf("consumer idle timeout %d/%d after %d records; retrying",
+						idleAttempts, cfg.ConsumerIdleMaxes, totalRecords)
+					continue
+				}
+
+				log.Fatalf("consumer stopped early after %d records; expected %d", totalRecords, cfg.TotalRecords)
+			}
+
+			log.Fatalf("read from kafka: %v", err)
+		}
+
+		idleAttempts = 0
+		record := utils.FastFromCSV(string(msg.Value))
 		batch = append(batch, record)
 		totalRecords++
 
-		if len(batch) >= batchSize {
-
-			//  NEW NON-BLOCKING
-			batchCopy := make([]models.Record, len(batch))
-			copy(batchCopy, batch)
-
-			// Log total time for this chunk cycle (read + queue)
+		if len(batch) >= cfg.ConsumerBatchSize {
 			cycleDuration := time.Since(chunkStartTime)
 			log.Printf("Chunk %d: Total cycle time (read + queue) = %v, Total records so far: %d\n", chunkID, cycleDuration, totalRecords)
 
-			batchChan <- BatchJob{data: batchCopy, chunkID: chunkID}
+			job := BatchJob{data: batch, chunkID: chunkID}
+			batch = make([]models.Record, 0, cfg.ConsumerBatchSize)
+
+			select {
+			case batchChan <- job:
+			case <-ctx.Done():
+				log.Fatal("consumer cancelled while dispatching chunk")
+			}
 
 			chunkID++
-			batch = nil
-			chunkStartTime = time.Now() // Reset timer for next chunk
+			chunkStartTime = time.Now()
 		}
 	}
 
-	// last batch
 	if len(batch) > 0 {
-		batchChan <- BatchJob{data: batch, chunkID: chunkID}
+		select {
+		case batchChan <- BatchJob{data: batch, chunkID: chunkID}:
+		case <-ctx.Done():
+			log.Fatal("consumer cancelled before final chunk")
+		}
 	}
 
 	close(batchChan)
 	wg.Wait()
+	close(errCh)
+
+	if err, ok := <-errCh; ok {
+		log.Fatal(err)
+	}
 
 	elapsed := time.Since(startTime)
 
@@ -110,17 +156,11 @@ func main() {
 	log.Printf("Total records processed: %d\n", totalRecords)
 }
 
-func processChunk(records []models.Record, chunkID int) {
-
+func processChunk(cfg *config.Config, records []models.Record, chunkID int) error {
 	chunkStart := time.Now()
 
 	log.Printf("Processing chunk %d (%d records)...\n", chunkID, len(records))
 
-	//  OPTIMIZED: NO 3 DATA COPIES!
-	//  Instead, we sort indices and write using those indices
-	//  This saves 2-3GB of memory and eliminates copy overhead
-
-	//  NEW PARALLEL INDEX SORTING (no copy)
 	var idIndices, nameIndices, continentIndices []int
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -142,26 +182,38 @@ func processChunk(records []models.Record, chunkID int) {
 
 	wg.Wait()
 
-	//  PARALLEL WRITE using indices (NO COPY!)
+	writeErrCh := make(chan error, 3)
 	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
-		sorter.WriteChunkByIndices(records, idIndices, fmt.Sprintf("output/id_chunk_%d.csv", chunkID))
+		if err := sorter.WriteChunkByIndices(records, idIndices, fmt.Sprintf("%s/id_chunk_%d.csv", cfg.OutputDir, chunkID)); err != nil {
+			writeErrCh <- err
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		sorter.WriteChunkByIndices(records, nameIndices, fmt.Sprintf("output/name_chunk_%d.csv", chunkID))
+		if err := sorter.WriteChunkByIndices(records, nameIndices, fmt.Sprintf("%s/name_chunk_%d.csv", cfg.OutputDir, chunkID)); err != nil {
+			writeErrCh <- err
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		sorter.WriteChunkByIndices(records, continentIndices, fmt.Sprintf("output/continent_chunk_%d.csv", chunkID))
+		if err := sorter.WriteChunkByIndices(records, continentIndices, fmt.Sprintf("%s/continent_chunk_%d.csv", cfg.OutputDir, chunkID)); err != nil {
+			writeErrCh <- err
+		}
 	}()
 
 	wg.Wait()
+	close(writeErrCh)
+
+	if err, ok := <-writeErrCh; ok {
+		return fmt.Errorf("write chunk %d: %w", chunkID, err)
+	}
 
 	elapsed := time.Since(chunkStart)
 	log.Printf("Chunk %d done in %v\n", chunkID, elapsed)
+	return nil
 }

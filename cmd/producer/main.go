@@ -1,63 +1,42 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"kafka-pipeline/internal/config"
 	"kafka-pipeline/internal/generator"
 	kafkaproducer "kafka-pipeline/internal/kafka"
 	"kafka-pipeline/pkg/utils"
 	"log"
-	"os"
-	"strconv"
 	"sync"
 	"time"
 
 	kafka "github.com/segmentio/kafka-go"
 )
 
-// Load from environment with defaults
-func getEnv(key string, defaultVal int) int {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
-	intVal, err := strconv.Atoi(val)
-	if err != nil {
-		log.Printf("Warning: Invalid %s value '%s', using default %d\n", key, val, defaultVal)
-		return defaultVal
-	}
-	return intVal
-}
-
-func getEnvString(key, defaultVal string) string {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
-	return val
-}
-
-var (
-	totalRecords = getEnv("TOTAL_RECORDS", 50_000_000)
-	numWorkers   = getEnv("NUM_WORKERS", 4)
-	batchSize    = getEnv("BATCH_SIZE", 10000)
-	kafkaBroker  = getEnvString("KAFKA_BROKER", "localhost:9092")
-)
-
 func main() {
+	cfg := config.GetConfig()
 	start := time.Now()
-	writer := kafkaproducer.NewWriter("source")
+	writer := kafkaproducer.NewWriter(cfg.SourceTopic)
 	defer writer.Close()
-	var wg sync.WaitGroup
-	recordsPerWorker := totalRecords / numWorkers
-	remainder := totalRecords % numWorkers
 
-	log.Printf("Starting producer: %d total records across %d workers\n", totalRecords, numWorkers)
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, cfg.ProducerNumWorkers)
+	recordsPerWorker := cfg.TotalRecords / cfg.ProducerNumWorkers
+	remainder := cfg.TotalRecords % cfg.ProducerNumWorkers
+
+	log.Printf("Starting producer: %d total records across %d workers\n", cfg.TotalRecords, cfg.ProducerNumWorkers)
 	log.Printf("Distribution: %d records per worker + %d remainder\n", recordsPerWorker, remainder)
 
-	for i := 0; i < numWorkers; i++ {
+	for i := 0; i < cfg.ProducerNumWorkers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			messages := make([]kafka.Message, 0, batchSize)
+			gen := generator.New(time.Now().UnixNano() + int64(workerID))
+			messages := make([]kafka.Message, 0, cfg.ProducerBatchSize)
 			batchCount := 0
 
 			// Calculate records for this worker (distribute remainder to workers)
@@ -70,17 +49,28 @@ func main() {
 			globalIDOffset := int64(workerID)*int64(recordsPerWorker) + int64(min(workerID, remainder))
 
 			for j := int64(0); j < int64(workRecords); j++ {
-				rec := generator.GenerateRecord(int32(globalIDOffset + j))
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				rec := gen.GenerateRecord(int32(globalIDOffset + j))
 				csv := utils.TOCSV(rec)
 				messages = append(messages, kafka.Message{Value: []byte(csv)})
-				if len(messages) == batchSize {
+				if len(messages) == cfg.ProducerBatchSize {
 					err := kafkaproducer.WriteBatch(writer, messages)
 					if err != nil {
-						log.Printf("Worker %d: Error writing batch: %v\n", workerID, err)
+						select {
+						case errCh <- fmt.Errorf("worker %d write batch: %w", workerID, err):
+						default:
+						}
+						cancel()
+						return
 					}
 					batchCount++
 					if batchCount%100 == 0 {
-						log.Printf("Worker %d: Processed %d batches (%d records)\n", workerID, batchCount, batchCount*batchSize)
+						log.Printf("Worker %d: Processed %d batches (%d records)\n", workerID, batchCount, batchCount*cfg.ProducerBatchSize)
 					}
 					messages = messages[:0] // Clear the slice for the next batch
 				}
@@ -90,19 +80,29 @@ func main() {
 			if len(messages) > 0 {
 				err := kafkaproducer.WriteBatch(writer, messages)
 				if err != nil {
-					log.Printf("Worker %d: Error flushing batch: %v\n", workerID, err)
+					select {
+					case errCh <- fmt.Errorf("worker %d flush batch: %w", workerID, err):
+					default:
+					}
+					cancel()
+					return
 				}
 			}
 			log.Printf("Worker %d: Finished - processed %d batches\n", workerID, batchCount)
 		}(i)
 	}
 
-	wg.Wait() // Log the total time taken to generate and send all records
+	wg.Wait()
+	close(errCh)
+
+	if err, ok := <-errCh; ok {
+		log.Fatal(err)
+	}
+
 	elapsed := time.Since(start)
-	throughput := float64(totalRecords) / elapsed.Seconds()
+	throughput := float64(cfg.TotalRecords) / elapsed.Seconds()
 	log.Printf("Total time: %v\n", elapsed)
 	log.Printf("Throughput: %.0f records/sec\n", throughput)
-
 }
 
 func min(a, b int) int {

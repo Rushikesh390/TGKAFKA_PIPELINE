@@ -3,40 +3,44 @@ package generator
 import (
 	"kafka-pipeline/pkg/models"
 	"math/rand"
-	"time"
 )
 
 var continents = []string{"Asia", "Africa", "North America", "South America", "Europe", "Australia"}
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+var addressChars = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
 
-func init() {
-	// Seed the random number generator
-	rand.Seed(time.Now().UnixNano())
+type Generator struct {
+	rnd *rand.Rand
 }
 
-func randomString(length int) string {
+func New(seed int64) *Generator {
+	return &Generator{
+		rnd: rand.New(rand.NewSource(seed)),
+	}
+}
+
+func (g *Generator) randomString(length int) string {
 	b := make([]rune, length)
 	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+		b[i] = letters[g.rnd.Intn(len(letters))]
 	}
 	return string(b)
 }
 
-func randomAddress(length int) string {
-	chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
+func (g *Generator) randomAddress(length int) string {
 	b := make([]rune, length)
 	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
+		b[i] = addressChars[g.rnd.Intn(len(addressChars))]
 	}
 	return string(b)
 }
 
-func GenerateRecord(id int32) models.Record {
+func (g *Generator) GenerateRecord(id int32) models.Record {
 	return models.Record{
 		ID:        id,
-		Name:      randomString(10 + rand.Intn(6)),
-		Address:   randomAddress(15 + rand.Intn(6)),
-		Continent: continents[rand.Intn(len(continents))],
+		Name:      g.randomString(10 + g.rnd.Intn(6)),
+		Address:   g.randomAddress(15 + g.rnd.Intn(6)),
+		Continent: continents[g.rnd.Intn(len(continents))],
 	}
 }

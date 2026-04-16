@@ -26,3 +26,5 @@ vendor/
 # Go
 .go/
 *.test
+.gocache/
+.gomodcache/

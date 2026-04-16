@@ -32,53 +32,38 @@ func getEnvString(key, defaultVal string) string {
 	return val
 }
 
-func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b string) bool) {
+func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b Item) bool) error {
 
 	start := time.Now()
 
-	//  OLD: readers created but merge inside loop
-	/*
-		for i := 0; i < numFiles; i++ {
-	*/
-
-	//  NEW: initialize all readers first
 	readers := make([]*FileReader, numFiles)
 
 	h := &MinHeap{
 		Items:    []Item{},
-		LessFunc: less, // Now passes CSV strings directly - no formatting!
+		LessFunc: less,
 	}
 
 	heap.Init(h)
 
-	//  OPEN ALL FILES FIRST
 	log.Printf("Opening %d files for topic %s...", numFiles, topic)
 	for i := 0; i < numFiles; i++ {
 		filename := fmt.Sprintf(filePattern, i)
 
 		fr, err := NewFileReader(filename)
 		if err != nil {
-			log.Fatalf("error opening file %s: %v", filename, err)
+			return fmt.Errorf("open file %s: %w", filename, err)
 		}
 
 		readers[i] = fr
 
 		line, ok := fr.Next()
 		if ok {
-			rec := utils.FastFromCSV(line) // OPTIMIZED: use FastFromCSV
-			// OPTIMIZATION: Cache CSV string to avoid repeated formatting in heap comparisons
+			rec := utils.FastFromCSV(line)
 			heap.Push(h, Item{Record: rec, CSVLine: line, FileID: i})
 		}
 	}
 	log.Printf("All files opened. Heap has %d items. Starting merge...", h.Len())
 
-	//  OLD: writer inside loop
-	/*
-		writer := kafka.NewWriter(topic)
-		defer writer.Close()
-	*/
-
-	//  NEW: single writer with environment-based configuration
 	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
 	batchSize := getEnvInt("MERGER_BATCH_SIZE", 20000)
 	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 50)
@@ -92,46 +77,33 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 	defer writer.Close()
 
 	ctx := context.Background()
-
-	//  batching
-	batch := make([]kafka.Message, 0, 20000)
-
-	//  OLD: merge inside file loop
-	/*
-		for h.Len() > 0 {
-	*/
-
-	//  CORRECT MERGE LOOP
+	batch := make([]kafka.Message, 0, batchSize)
 	recordsWritten := 0
 	batchesWritten := 0
 	for h.Len() > 0 {
-
 		item := heap.Pop(h).(Item)
 
 		batch = append(batch, kafka.Message{
-			Value: []byte(utils.TOCSV(item.Record)),
+			Value: []byte(item.CSVLine),
 		})
 		recordsWritten++
 
-		// flush batch
-		if len(batch) >= 20000 {
+		if len(batch) >= batchSize {
 			batchesWritten++
-			// Log progress every 10 batches (200K records) instead of every batch
 			if batchesWritten%10 == 0 {
 				log.Printf("Progress: topic %s has written %d records (%d batches)", topic, recordsWritten, batchesWritten)
 			}
 			err := writer.WriteMessages(ctx, batch...)
 			if err != nil {
-				log.Printf("ERROR writing batch to topic %s: %v", topic, err)
+				closeReaders(readers)
+				return fmt.Errorf("write batch to topic %s: %w", topic, err)
 			}
 			batch = batch[:0]
 		}
 
-		// read next from same file
 		line, ok := readers[item.FileID].Next()
 		if ok {
-			rec := utils.FastFromCSV(line) // OPTIMIZED: use FastFromCSV
-			// OPTIMIZATION: Cache CSV to avoid repeated formatting
+			rec := utils.FastFromCSV(line)
 			heap.Push(h, Item{
 				Record:  rec,
 				CSVLine: line,
@@ -140,25 +112,26 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b s
 		}
 	}
 
-	// flush remaining
 	if len(batch) > 0 {
 		log.Printf("Flushing final batch for topic %s (total records: %d)", topic, recordsWritten)
-		writer.WriteMessages(ctx, batch...)
-	}
-
-	//  OLD: incorrect placement
-	/*
-		for _, r := range readers {
-			r.Close()
+		if err := writer.WriteMessages(ctx, batch...); err != nil {
+			closeReaders(readers)
+			return fmt.Errorf("flush final batch to topic %s: %w", topic, err)
 		}
-	*/
-
-	//  NEW: close all readers properly
-	log.Printf("Closing %d file readers for topic %s...", len(readers), topic)
-	for _, r := range readers {
-		r.Close()
 	}
+
+	log.Printf("Closing %d file readers for topic %s...", len(readers), topic)
+	closeReaders(readers)
 
 	elapsed := time.Since(start)
 	log.Printf("Merge completed for topic %s in %v (total records: %d)\n", topic, elapsed, recordsWritten)
+	return nil
+}
+
+func closeReaders(readers []*FileReader) {
+	for _, r := range readers {
+		if r != nil {
+			r.Close()
+		}
+	}
 }

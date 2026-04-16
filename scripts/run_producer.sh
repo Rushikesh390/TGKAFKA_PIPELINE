@@ -12,7 +12,11 @@ echo "======================================"
 echo "Generating 50 million random records..."
 echo ""
 
-go run cmd/producer/main.go
+if [ -x "./producer" ]; then
+  ./producer
+else
+  go run ./cmd/producer
+fi
 
 echo ""
 echo "✓ Producer completed successfully"
