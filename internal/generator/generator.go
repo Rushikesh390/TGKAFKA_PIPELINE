@@ -7,8 +7,8 @@ import (
 
 var continents = []string{"Asia", "Africa", "North America", "South America", "Europe", "Australia"}
 
-var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-var addressChars = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
+const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const addressChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
 
 type Generator struct {
 	rnd *rand.Rand
@@ -21,7 +21,7 @@ func New(seed int64) *Generator {
 }
 
 func (g *Generator) randomString(length int) string {
-	b := make([]rune, length)
+	b := make([]byte, length)
 	for i := range b {
 		b[i] = letters[g.rnd.Intn(len(letters))]
 	}
@@ -29,7 +29,7 @@ func (g *Generator) randomString(length int) string {
 }
 
 func (g *Generator) randomAddress(length int) string {
-	b := make([]rune, length)
+	b := make([]byte, length)
 	for i := range b {
 		b[i] = addressChars[g.rnd.Intn(len(addressChars))]
 	}

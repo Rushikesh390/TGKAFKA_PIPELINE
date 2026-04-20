@@ -6,33 +6,32 @@ import (
 	"strings"
 )
 
-// FastFromCSV uses fast string split instead of csv.Reader (10x faster)
 func FastFromCSV(line string) models.Record {
-	parts := strings.Split(line, ",")
-	if len(parts) < 4 {
+	first := strings.IndexByte(line, ',')
+	if first <= 0 {
 		return models.Record{}
 	}
 
-	id, _ := strconv.Atoi(parts[0])
+	secondOffset := strings.IndexByte(line[first+1:], ',')
+	if secondOffset == -1 {
+		return models.Record{}
+	}
+	second := first + 1 + secondOffset
+
+	last := strings.LastIndexByte(line, ',')
+	if last <= second {
+		return models.Record{}
+	}
+
+	id, _ := strconv.Atoi(line[:first])
 	return models.Record{
 		ID:        int32(id),
-		Name:      parts[1],
-		Address:   parts[2],
-		Continent: parts[3],
+		Name:      line[first+1 : second],
+		Address:   line[second+1 : last],
+		Continent: line[last+1:],
 	}
 }
 
 func FromCSV(line string) models.Record {
-	parts := strings.Split(line, ",")
-	if len(parts) < 4 {
-		return models.Record{}
-	}
-
-	id, _ := strconv.Atoi(parts[0])
-	return models.Record{
-		ID:        int32(id),
-		Name:      parts[1],
-		Address:   parts[2],
-		Continent: parts[3],
-	}
+	return FastFromCSV(line)
 }

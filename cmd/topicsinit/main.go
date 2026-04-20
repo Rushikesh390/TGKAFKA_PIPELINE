@@ -33,22 +33,22 @@ func main() {
 	topics := []kafka.TopicConfig{
 		{
 			Topic:             cfg.SourceTopic,
-			NumPartitions:     cfg.TopicPartitions,
+			NumPartitions:     cfg.SourceTopicPartitions,
 			ReplicationFactor: 1,
 		},
 		{
 			Topic:             cfg.IDTopic,
-			NumPartitions:     cfg.TopicPartitions,
+			NumPartitions:     cfg.OutputTopicPartitions,
 			ReplicationFactor: 1,
 		},
 		{
 			Topic:             cfg.NameTopic,
-			NumPartitions:     cfg.TopicPartitions,
+			NumPartitions:     cfg.OutputTopicPartitions,
 			ReplicationFactor: 1,
 		},
 		{
 			Topic:             cfg.ContinentTopic,
-			NumPartitions:     cfg.TopicPartitions,
+			NumPartitions:     cfg.OutputTopicPartitions,
 			ReplicationFactor: 1,
 		},
 	}

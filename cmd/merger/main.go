@@ -41,6 +41,9 @@ func main() {
 	go func() {
 		defer wg.Done()
 		if err := merger.MergeFiles(filepath.Join(cfg.OutputDir, "name_chunk_%d.csv"), numChunks, cfg.NameTopic, func(a, b merger.Item) bool {
+			if a.Record.Name == b.Record.Name {
+				return a.Record.ID < b.Record.ID
+			}
 			return a.Record.Name < b.Record.Name
 		}); err != nil {
 			errCh <- err
@@ -51,6 +54,9 @@ func main() {
 	go func() {
 		defer wg.Done()
 		if err := merger.MergeFiles(filepath.Join(cfg.OutputDir, "continent_chunk_%d.csv"), numChunks, cfg.ContinentTopic, func(a, b merger.Item) bool {
+			if a.Record.Continent == b.Record.Continent {
+				return a.Record.ID < b.Record.ID
+			}
 			return a.Record.Continent < b.Record.Continent
 		}); err != nil {
 			errCh <- err

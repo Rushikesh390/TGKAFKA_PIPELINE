@@ -2,8 +2,8 @@ package sorter
 
 import (
 	"bufio"
-	"fmt"
 	"kafka-pipeline/pkg/models"
+	"kafka-pipeline/pkg/utils"
 	"os"
 )
 
@@ -14,11 +14,11 @@ func WriteChunkToFile(records []models.Record, filename string) error {
 	}
 	defer file.Close()
 
-	writer := bufio.NewWriter(file)
+	writer := bufio.NewWriterSize(file, 4<<20)
+	buf := make([]byte, 0, 96)
 	for _, r := range records {
-		line := fmt.Sprintf("%d,%s,%s,%s\n",
-			r.ID, r.Name, r.Address, r.Continent)
-		if _, err := writer.WriteString(line); err != nil {
+		buf = utils.AppendCSVLine(buf[:0], r)
+		if _, err := writer.Write(buf); err != nil {
 			return err
 		}
 	}
@@ -33,12 +33,12 @@ func WriteChunkByIndices(records []models.Record, indices []int, filename string
 	}
 	defer file.Close()
 
-	writer := bufio.NewWriter(file)
+	writer := bufio.NewWriterSize(file, 4<<20)
+	buf := make([]byte, 0, 96)
 	for _, idx := range indices {
 		r := records[idx]
-		line := fmt.Sprintf("%d,%s,%s,%s\n",
-			r.ID, r.Name, r.Address, r.Continent)
-		if _, err := writer.WriteString(line); err != nil {
+		buf = utils.AppendCSVLine(buf[:0], r)
+		if _, err := writer.Write(buf); err != nil {
 			return err
 		}
 	}

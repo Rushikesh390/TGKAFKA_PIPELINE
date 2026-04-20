@@ -12,6 +12,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+declare -A STAGE_DURATIONS_MS
+
 PRODUCER_BIN="${PRODUCER_BIN:-./producer}"
 CONSUMER_BIN="${CONSUMER_BIN:-./consumer}"
 MERGER_BIN="${MERGER_BIN:-./merger}"
@@ -35,6 +37,55 @@ format_duration() {
   local minutes=$((total_seconds / 60))
   local seconds=$((total_seconds % 60))
   printf "%sm %ss" "$minutes" "$seconds"
+}
+
+report_line() {
+  echo "$1" >> "$REPORT_FILE"
+}
+
+extract_last_line() {
+  local pattern=$1
+  local file=$2
+
+  if [ -f "$file" ] && grep -q "$pattern" "$file" 2>/dev/null; then
+    grep "$pattern" "$file" | tail -1
+    return 0
+  fi
+
+  return 1
+}
+
+extract_merger_slowest_duration() {
+  local file=$1
+
+  awk '
+    /Merge completed for topic/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "in" && (i + 1) <= NF) {
+          value = $(i + 1)
+          compare = value
+          if (value ~ /ms$/) {
+            sub(/ms$/, "", compare)
+            compare += 0
+          } else if (value ~ /s$/) {
+            sub(/s$/, "", compare)
+            compare = (compare + 0) * 1000
+          } else {
+            compare += 0
+          }
+          if (compare > max) {
+            max = compare
+            max_display = value
+          }
+        }
+      }
+    }
+    END {
+      if (max_display != "") {
+        printf "%s", max_display
+      }
+    }
+  ' "$file"
 }
 
 OVERALL_START=$(now_ms)
@@ -91,6 +142,7 @@ run_stage() {
   if eval "$command" > "$LOG_DIR/${stage_name,,}.log" 2>&1; then
     stage_end=$(now_ms)
     stage_duration=$((stage_end - stage_start))
+    STAGE_DURATIONS_MS["$stage_name"]=$stage_duration
 
     print_success "$stage_name completed in: $(format_duration "$stage_duration")"
     echo "  Duration: $(format_duration "$stage_duration") (${stage_duration}ms)" >> "$REPORT_FILE"
@@ -98,20 +150,18 @@ run_stage() {
 
     case "$stage_name" in
       "PRODUCER")
-        if grep -q "Throughput:" "$LOG_DIR/${stage_name,,}.log"; then
-          throughput=$(grep "Throughput:" "$LOG_DIR/${stage_name,,}.log" | tail -1)
+        if throughput=$(extract_last_line "Throughput:" "$LOG_DIR/${stage_name,,}.log"); then
           print_info "$throughput"
         fi
         ;;
       "CONSUMER")
-        if grep -q "Total records processed:" "$LOG_DIR/${stage_name,,}.log"; then
-          records=$(grep "Total records processed:" "$LOG_DIR/${stage_name,,}.log" | tail -1)
+        if records=$(extract_last_line "Total records processed:" "$LOG_DIR/${stage_name,,}.log"); then
           print_info "$records"
         fi
         ;;
       "MERGER")
-        if grep -q "Merge completed" "$LOG_DIR/${stage_name,,}.log"; then
-          merges=$(grep "Merge completed" "$LOG_DIR/${stage_name,,}.log" | wc -l)
+        if grep -q "Merge completed" "$LOG_DIR/${stage_name,,}.log" 2>/dev/null; then
+          merges=$(grep -c "Merge completed for topic" "$LOG_DIR/${stage_name,,}.log" || true)
           print_info "Completed $merges merge operations"
         fi
         ;;
@@ -194,50 +244,84 @@ main() {
   echo -e "${GREEN}[ok] PIPELINE EXECUTION COMPLETE${NC}"
   echo -e "${YELLOW}=========================================${NC}\n"
 
-  echo "Overall Runtime Summary:" | tee -a "$REPORT_FILE"
-  echo "================================================" | tee -a "$REPORT_FILE"
+  echo "Overall Runtime Summary:"
+  echo "================================================"
+  report_line "Overall Runtime Summary:"
+  report_line "================================================"
 
   if [ -f "$LOG_DIR/producer.log" ]; then
-    producer_time=$(grep "Total time:" "$LOG_DIR/producer.log" 2>/dev/null | tail -1 || echo "Unknown")
-    echo "  Producer:  $producer_time" | tee -a "$REPORT_FILE"
+    producer_wall="${STAGE_DURATIONS_MS[PRODUCER]:-0}"
+    producer_internal=$(extract_last_line "Total time:" "$LOG_DIR/producer.log" || echo "Internal runtime unavailable")
+    summary="  Producer:  wall-clock $(format_duration "$producer_wall") (${producer_wall}ms); $producer_internal"
+    echo "$summary"
+    report_line "$summary"
   fi
 
   if [ -f "$LOG_DIR/consumer.log" ]; then
-    consumer_time=$(grep "Consumer finished" "$LOG_DIR/consumer.log" 2>/dev/null | tail -1 || echo "Unknown")
-    echo "  Consumer:  $consumer_time" | tee -a "$REPORT_FILE"
+    consumer_wall="${STAGE_DURATIONS_MS[CONSUMER]:-0}"
+    consumer_internal=$(extract_last_line "Consumer finished" "$LOG_DIR/consumer.log" || echo "Internal runtime unavailable")
+    summary="  Consumer:  wall-clock $(format_duration "$consumer_wall") (${consumer_wall}ms); $consumer_internal"
+    echo "$summary"
+    report_line "$summary"
   fi
 
   if [ -f "$LOG_DIR/merger.log" ]; then
-    merger_count=$(grep "Merge completed" "$LOG_DIR/merger.log" 2>/dev/null | wc -l || echo "Unknown")
-    echo "  Merger:    $merger_count operations completed" | tee -a "$REPORT_FILE"
+    merger_wall="${STAGE_DURATIONS_MS[MERGER]:-0}"
+    merger_count=$(grep -c "Merge completed for topic" "$LOG_DIR/merger.log" 2>/dev/null || echo "0")
+    merger_slowest=$(extract_merger_slowest_duration "$LOG_DIR/merger.log")
+    if [ -n "${merger_slowest:-}" ]; then
+      summary="  Merger:    wall-clock $(format_duration "$merger_wall") (${merger_wall}ms); ${merger_count} parallel merge operations, slowest topic completed in ${merger_slowest}"
+    else
+      summary="  Merger:    wall-clock $(format_duration "$merger_wall") (${merger_wall}ms); ${merger_count} parallel merge operations"
+    fi
+    echo "$summary"
+    report_line "$summary"
   fi
 
-  echo "" | tee -a "$REPORT_FILE"
-  echo -e "${GREEN}Total Time: $(format_duration "$OVERALL_DURATION")${NC}" | tee -a "$REPORT_FILE"
-  echo "End time: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$REPORT_FILE"
-  echo "================================================" | tee -a "$REPORT_FILE"
+  echo ""
+  echo "Total Time: $(format_duration "$OVERALL_DURATION")"
+  echo "End time: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "================================================"
+  report_line ""
+  report_line "Total Time: $(format_duration "$OVERALL_DURATION")"
+  report_line "End time: $(date '+%Y-%m-%d %H:%M:%S')"
+  report_line "================================================"
 
-  echo "" | tee -a "$REPORT_FILE"
-  echo "Performance Analysis:" | tee -a "$REPORT_FILE"
-  echo "  Total records: ${TOTAL_RECORDS:-50000000}" | tee -a "$REPORT_FILE"
+  echo ""
+  echo "Performance Analysis:"
+  echo "  Total records: ${TOTAL_RECORDS:-50000000}"
+  report_line ""
+  report_line "Performance Analysis:"
+  report_line "  Total records: ${TOTAL_RECORDS:-50000000}"
   throughput=$(awk -v total="${TOTAL_RECORDS:-50000000}" -v duration_ms="$OVERALL_DURATION" 'BEGIN { if (duration_ms > 0) printf "%d", (total * 1000) / duration_ms; else print "N/A" }')
-  echo "  Overall throughput: ~${throughput} records/sec" | tee -a "$REPORT_FILE"
+  echo "  Overall throughput: ~${throughput} records/sec"
+  report_line "  Overall throughput: ~${throughput} records/sec"
 
-  echo "" | tee -a "$REPORT_FILE"
-  echo "Output Directory Summary:" | tee -a "$REPORT_FILE"
+  echo ""
+  echo "Output Directory Summary:"
+  report_line ""
+  report_line "Output Directory Summary:"
   if compgen -G "./output/*.csv" > /dev/null; then
     file_count=$(ls -1 ./output/*.csv 2>/dev/null | wc -l || echo "0")
     total_size=$(du -sh ./output 2>/dev/null | cut -f1 || echo "Unknown")
     record_count=$(wc -l ./output/*.csv 2>/dev/null | tail -1 | awk '{print $1}' || echo "Unknown")
-    echo "  Files: $file_count" | tee -a "$REPORT_FILE"
-    echo "  Size: $total_size" | tee -a "$REPORT_FILE"
-    echo "  Total chunk rows across all sort dimensions: $record_count" | tee -a "$REPORT_FILE"
+    echo "  Files: $file_count"
+    echo "  Size: $total_size"
+    echo "  Total chunk rows across all sort dimensions: $record_count"
+    report_line "  Files: $file_count"
+    report_line "  Size: $total_size"
+    report_line "  Total chunk rows across all sort dimensions: $record_count"
   else
-    echo "  Files: 0" | tee -a "$REPORT_FILE"
+    echo "  Files: 0"
+    echo "  Note: temporary chunk files were cleaned up after a successful merge"
+    report_line "  Files: 0"
+    report_line "  Note: temporary chunk files were cleaned up after a successful merge"
   fi
 
-  echo "" | tee -a "$REPORT_FILE"
-  echo "Report saved to: $REPORT_FILE" | tee -a "$REPORT_FILE"
+  echo ""
+  echo "Report saved to: $REPORT_FILE"
+  report_line ""
+  report_line "Report saved to: $REPORT_FILE"
   print_success "Full report saved to: $REPORT_FILE"
 }
 

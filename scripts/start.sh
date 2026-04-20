@@ -11,7 +11,8 @@ compose() {
 }
 
 BOOTSTRAP_SERVER="${BOOTSTRAP_SERVER:-kafka:29092}"
-TOPIC_PARTITIONS="${TOPIC_PARTITIONS:-4}"
+SOURCE_TOPIC_PARTITIONS="${SOURCE_TOPIC_PARTITIONS:-${TOPIC_PARTITIONS:-6}}"
+OUTPUT_TOPIC_PARTITIONS="${OUTPUT_TOPIC_PARTITIONS:-1}"
 
 echo "Resetting Kafka stack for a clean run..."
 compose down -v --remove-orphans >/dev/null 2>&1 || true
@@ -34,7 +35,7 @@ compose exec -T kafka kafka-topics \
   --if-not-exists \
   --topic source \
   --bootstrap-server "$BOOTSTRAP_SERVER" \
-  --partitions "$TOPIC_PARTITIONS" \
+  --partitions "$SOURCE_TOPIC_PARTITIONS" \
   --replication-factor 1
 
 compose exec -T kafka kafka-topics \
@@ -42,7 +43,7 @@ compose exec -T kafka kafka-topics \
   --if-not-exists \
   --topic id \
   --bootstrap-server "$BOOTSTRAP_SERVER" \
-  --partitions "$TOPIC_PARTITIONS" \
+  --partitions "$OUTPUT_TOPIC_PARTITIONS" \
   --replication-factor 1
 
 compose exec -T kafka kafka-topics \
@@ -50,7 +51,7 @@ compose exec -T kafka kafka-topics \
   --if-not-exists \
   --topic name \
   --bootstrap-server "$BOOTSTRAP_SERVER" \
-  --partitions "$TOPIC_PARTITIONS" \
+  --partitions "$OUTPUT_TOPIC_PARTITIONS" \
   --replication-factor 1
 
 compose exec -T kafka kafka-topics \
@@ -58,7 +59,7 @@ compose exec -T kafka kafka-topics \
   --if-not-exists \
   --topic continent \
   --bootstrap-server "$BOOTSTRAP_SERVER" \
-  --partitions "$TOPIC_PARTITIONS" \
+  --partitions "$OUTPUT_TOPIC_PARTITIONS" \
   --replication-factor 1
 
 echo "Kafka setup completed"

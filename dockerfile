@@ -32,14 +32,16 @@ WORKDIR /app
 
 # Install only runtime dependencies (bash for scripts)
 # Keep dependencies minimal for smaller image
-RUN apk add --no-cache bash bc ca-certificates netcat-openbsd procps
+RUN apk add --no-cache bash bc ca-certificates netcat-openbsd procps tzdata
+
+ENV TZ=Asia/Kolkata
 
 # Copy binaries from builder (only what we need)
 COPY --from=builder /app/producer /app/consumer /app/merger /app/topics-init ./
 
 # Copy scripts for automation
 COPY scripts/ ./scripts/
-COPY README.md ARCHITECTURE.md VERIFICATION.md DOCKER_GUIDE.md DOCKER_README.md ./
+COPY README.md HOW_TO_RUN.md ./
 
 # Create output directory with proper permissions
 RUN mkdir -p /app/output && chmod 777 /app/output

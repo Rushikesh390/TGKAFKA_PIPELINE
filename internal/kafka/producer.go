@@ -28,8 +28,8 @@ func getEnvString(key, defaultVal string) string {
 
 func NewWriter(topic string) *kafka.Writer {
 	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
-	batchSize := getEnvInt("KAFKA_BATCH_SIZE", 5000)
-	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 50)
+	batchSize := getEnvInt("KAFKA_BATCH_SIZE", 10_000)
+	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 100)
 
 	return &kafka.Writer{
 		Addr:         kafka.TCP(broker),

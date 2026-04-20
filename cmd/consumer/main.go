@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"kafka-pipeline/internal/config"
-	"kafka-pipeline/internal/kafka"
+	kafkaclient "kafka-pipeline/internal/kafka"
 	"kafka-pipeline/internal/sorter"
 	"kafka-pipeline/pkg/models"
 	"kafka-pipeline/pkg/utils"
@@ -13,6 +12,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	kafka "github.com/segmentio/kafka-go"
 )
 
 // BatchJob holds both the batch data and its chunk ID
@@ -29,13 +30,13 @@ func main() {
 
 	startTime := time.Now()
 
-	reader := kafka.NewReader(cfg.SourceTopic, cfg.ConsumerGroupID)
+	reader := kafkaclient.NewReader(cfg.SourceTopic, cfg.ConsumerGroupID)
 	defer reader.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batchChan := make(chan BatchJob, 1)
+	batchChan := make(chan BatchJob, cfg.ConsumerNumWorkers)
 	errCh := make(chan error, cfg.ConsumerNumWorkers)
 
 	var wg sync.WaitGroup
@@ -67,54 +68,36 @@ func main() {
 	}
 
 	batch := make([]models.Record, 0, cfg.ConsumerBatchSize)
+	pendingCommits := make([]kafka.Message, 0, cfg.ConsumerCommitSize)
 	chunkID := 0
 	totalRecords := 0
 	chunkStartTime := time.Now()
-	idleTimeout := time.Duration(cfg.ConsumerIdleSecs) * time.Second
-	idleAttempts := 0
 
 	log.Println("Consumer started (optimized)...")
 
-	for {
+	for totalRecords < cfg.TotalRecords {
 		select {
 		case err := <-errCh:
 			log.Fatal(err)
 		default:
 		}
 
-		readCtx, readCancel := context.WithTimeout(ctx, idleTimeout)
-		msg, err := reader.ReadMessage(readCtx)
-		readCancel()
-
+		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-				break
-			}
-
-			if errors.Is(err, context.DeadlineExceeded) {
-				idleAttempts++
-
-				if totalRecords == cfg.TotalRecords {
-					log.Printf("Reached expected record count (%d). Finishing...\n", cfg.TotalRecords)
-					break
-				}
-
-				if idleAttempts < cfg.ConsumerIdleMaxes {
-					log.Printf("consumer idle timeout %d/%d after %d records; retrying",
-						idleAttempts, cfg.ConsumerIdleMaxes, totalRecords)
-					continue
-				}
-
-				log.Fatalf("consumer stopped early after %d records; expected %d", totalRecords, cfg.TotalRecords)
-			}
-
-			log.Fatalf("read from kafka: %v", err)
+			log.Fatalf("fetch from kafka: %v", err)
 		}
 
-		idleAttempts = 0
 		record := utils.FastFromCSV(string(msg.Value))
 		batch = append(batch, record)
+		pendingCommits = append(pendingCommits, msg)
 		totalRecords++
+
+		if len(pendingCommits) >= cfg.ConsumerCommitSize {
+			if err := reader.CommitMessages(ctx, pendingCommits...); err != nil {
+				log.Fatalf("commit consumer offsets: %v", err)
+			}
+			pendingCommits = pendingCommits[:0]
+		}
 
 		if len(batch) >= cfg.ConsumerBatchSize {
 			cycleDuration := time.Since(chunkStartTime)
@@ -131,6 +114,12 @@ func main() {
 
 			chunkID++
 			chunkStartTime = time.Now()
+		}
+	}
+
+	if len(pendingCommits) > 0 {
+		if err := reader.CommitMessages(ctx, pendingCommits...); err != nil {
+			log.Fatalf("commit final consumer offsets: %v", err)
 		}
 	}
 

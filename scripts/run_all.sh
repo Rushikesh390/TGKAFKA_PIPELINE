@@ -24,7 +24,7 @@ for arg in "$@"; do
       echo "  4. Merges sorted chunks (merger)"
       echo ""
       echo "Output:"
-      echo "  - CSV chunks in: ./output/"
+      echo "  - Temporary CSV chunks in: ./output/ (removed after a successful merge)"
       echo "  - Merged data in: Kafka topics (id, name, continent)"
       echo "  - Runtime report: ./logs/overall_report.txt"
       exit 0

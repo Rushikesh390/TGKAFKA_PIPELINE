@@ -8,8 +8,8 @@ import (
 
 func NewReader(topic, groupID string) *kafka.Reader {
 	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
-	minBytes := getEnvInt("CONSUMER_MIN_BYTES", 100_000)
-	maxBytes := getEnvInt("CONSUMER_MAX_BYTES", 50_000_000)
+	minBytes := getEnvInt("CONSUMER_MIN_BYTES", 1_000_000)
+	maxBytes := getEnvInt("CONSUMER_MAX_BYTES", 100_000_000)
 
 	return kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        []string{broker},

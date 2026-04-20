@@ -19,7 +19,7 @@ func SortByIDIndexed(records []models.Record) []int {
 	for i := 0; i < n; i++ {
 		indices[i] = i
 	}
-	
+
 	sort.Slice(indices, func(i, j int) bool {
 		return records[indices[i]].ID < records[indices[j]].ID
 	})
@@ -39,9 +39,14 @@ func SortByNameIndexed(records []models.Record) []int {
 	for i := 0; i < n; i++ {
 		indices[i] = i
 	}
-	
+
 	sort.Slice(indices, func(i, j int) bool {
-		return records[indices[i]].Name < records[indices[j]].Name
+		left := records[indices[i]]
+		right := records[indices[j]]
+		if left.Name == right.Name {
+			return left.ID < right.ID
+		}
+		return left.Name < right.Name
 	})
 	return indices
 }
@@ -59,9 +64,14 @@ func SortByContinentIndexed(records []models.Record) []int {
 	for i := 0; i < n; i++ {
 		indices[i] = i
 	}
-	
+
 	sort.Slice(indices, func(i, j int) bool {
-		return records[indices[i]].Continent < records[indices[j]].Continent
+		left := records[indices[i]]
+		right := records[indices[j]]
+		if left.Continent == right.Continent {
+			return left.ID < right.ID
+		}
+		return left.Continent < right.Continent
 	})
 	return indices
 }

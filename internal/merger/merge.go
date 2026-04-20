@@ -65,14 +65,15 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b I
 	log.Printf("All files opened. Heap has %d items. Starting merge...", h.Len())
 
 	broker := getEnvString("KAFKA_BROKER", "localhost:9092")
-	batchSize := getEnvInt("MERGER_BATCH_SIZE", 20000)
-	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 50)
+	batchSize := getEnvInt("MERGER_BATCH_SIZE", 50_000)
+	batchTimeout := getEnvInt("KAFKA_BATCH_TIMEOUT", 100)
 
 	writer := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:      []string{broker},
 		Topic:        topic,
 		BatchSize:    batchSize,
 		BatchTimeout: time.Duration(batchTimeout) * time.Millisecond,
+		RequiredAcks: 1,
 	})
 	defer writer.Close()
 
@@ -122,6 +123,7 @@ func MergeFiles(filePattern string, numFiles int, topic string, less func(a, b I
 
 	log.Printf("Closing %d file readers for topic %s...", len(readers), topic)
 	closeReaders(readers)
+	cleanupMergedFiles(filePattern, numFiles)
 
 	elapsed := time.Since(start)
 	log.Printf("Merge completed for topic %s in %v (total records: %d)\n", topic, elapsed, recordsWritten)
@@ -132,6 +134,15 @@ func closeReaders(readers []*FileReader) {
 	for _, r := range readers {
 		if r != nil {
 			r.Close()
+		}
+	}
+}
+
+func cleanupMergedFiles(filePattern string, numFiles int) {
+	for i := 0; i < numFiles; i++ {
+		filename := fmt.Sprintf(filePattern, i)
+		if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
+			log.Printf("remove chunk file %s: %v", filename, err)
 		}
 	}
 }
