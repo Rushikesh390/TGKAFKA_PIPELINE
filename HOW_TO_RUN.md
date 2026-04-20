@@ -5,14 +5,15 @@
 Use this path when you want the default container image declared in `docker-compose.yml`.
 
 **Prerequisites:** Docker and Docker Compose.
-
-### 1. Clean any previous run
+### 1. Create an Empty folder 
+### 2. Create a docker-compose.yml file and copy the code in it. 
+### 3. Clean any previous run
 
 ```bash
 docker compose down -v
 ```
 
-### 2. Start the pipeline
+### 4. Start the pipeline
 
 ```bash
 docker compose up
@@ -25,7 +26,7 @@ This will:
 - run the producer, consumer, and merger inside the `pipeline` container
 - write logs to `logs/`
 
-### 3. Wait for completion
+### 5. Wait for completion
 
 When the pipeline finishes, check:
 
@@ -34,7 +35,7 @@ When the pipeline finishes, check:
 - `logs/merger.log`
 - `logs/overall_report.txt`
 
-### 4. Verify output
+### 6. Verify output
 
 ```bash
 ./scripts/verify.sh
@@ -52,7 +53,7 @@ Expected order:
 - `name`: ascending alphabetic order by second column, then `id`
 - `continent`: ascending alphabetic order by fourth column, then `id`
 
-### 5. Stop the stack
+### 7. Stop the stack
 
 ```bash
 docker compose down
